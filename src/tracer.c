@@ -8,14 +8,38 @@
 #include "messages.h"
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 long calculateTime(struct timeval t1, struct timeval t2)
 {
     return (t1.tv_sec - t2.tv_sec) * 1000 + (t1.tv_usec - t2.tv_usec) / 1000;
 }
 
+char *trimwhitespace(char *str)
+{
+    char *end;
+
+    // Trim leading space
+    while (isspace((unsigned char)*str))
+        str++;
+
+    if (*str == 0) // All spaces?
+        return str;
+
+    // Trim trailing space
+    end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end))
+        end--;
+
+    // Write new null terminator character
+    end[1] = '\0';
+
+    return str;
+}
+
 char **getArgs(char *args)
 {
+    args = trimwhitespace(args);
     char *command = strdup(strsep(&args, " ")); // Nome do programa
     int size = (args == NULL) ? 0 : strlen(args);
     int nSpaces = (size == 0) ? 2 : 3; // Conta o numero de espaços no input, o valor de inicio depende na existencia de mais argumentos
@@ -92,15 +116,20 @@ int main(int argc, char const *argv[])
         {
             int nCommands = 1;
             int len = strlen(argv[3]);
-            for (int i = 0; i < len && argv[3][i] == '|'; i++)
-                nCommands++;
+            for (int i = 0; i < len; i++)
+            {
+                if (argv[3][i] == '|')
+                    nCommands++;
+            }
             char *sep = strdup(argv[3]);
             char names[100];
-            for (int i = 0; i < nCommands; i++)
+            strcpy(names, strsep(&sep, " "));
+            for (int i = 1; i < nCommands; i++)
             {
-                strcpy(names, strsep(&sep, " "));
                 strcat(names, ";");
-                strsep(&sep, " | ");
+                strsep(&sep, "|");
+                sep = trimwhitespace(sep);
+                strcat(names, strsep(&sep, " "));
             }
             if ((pid = fork()) == 0)
             {
@@ -110,33 +139,55 @@ int main(int argc, char const *argv[])
                 write(fifoStart, &msg, sizeof(MessageStart));
                 close(fifoStart);
                 char *sep = strdup(argv[3]);
-                int i = 0;
-                int fd[2];
-                pipe(fd);
-                int last = nCommands - 1;
-                while (i < nCommands)
+                int i = 1;
+                int nPipes = (nCommands - 1);
+                int pipes[nPipes * 2];
+                for (int j = 0; j < nPipes; j++)
                 {
-                    char **args = getArgs(strsep(&sep, " | "));
-                    if ((pid = fork()) == 0)
+                    if (pipe(pipes + j * 2) < 0)
                     {
-                        if (i != 0)
+                        perror("PIPE");
+                        return 1;
+                    }
+                }
+                int pipeAux = 0;
+                while (i <= nCommands)
+                {
+                    char **args = getArgs(strsep(&sep, "|"));
+                    if ((pid = fork()) == 0)
+                    {                      
+                        if (i != 1) // Não realiza isto no primeiro
                         {
-                            dup2(fd[0], 0);
+                            if (dup2(pipes[(pipeAux - 1) * 2], STDIN_FILENO) < 0)
+                            {
+                                perror("DUP2");
+                                return 0;
+                            }
                         }
-                        if (i != last)
+                        if (i != nCommands) // Não realiza isto no último
                         {
-                            dup2(fd[1], 1);
+                            if (dup2(pipes[pipeAux * 2 + 1], STDOUT_FILENO) < 0)
+                            {
+                                perror("DUP2");
+                                return 0;
+                            }
                         }
-                        close(fd[0]);
-                        close(fd[1]);
+                        for (int j = 0; j < nPipes * 2; j++)
+                        {
+                            close(pipes[j]);
+                        }
                         execvp(args[0], args);
                         perror(args[0]);
                         _exit(pid);
                     }
+                    if(i == nCommands) wait(NULL);
+                    pipeAux++;
                     i++;
                 }
-                close(fd[0]);
-                close(fd[1]);
+                for (i = 0; i < 2 * nPipes; i++)
+                {
+                    close(pipes[i]);
+                }
                 _exit(pid);
             }
             else
@@ -179,32 +230,32 @@ int main(int argc, char const *argv[])
     {
         if (fork() == 0)
         {
+            MessageStats msgStats;
+            msgStats.type = argv[1][6] == 't' ? TIME : argv[1][6] == 'c' ? COMMAND
+                                                                         : UNIQUE;
             pid_t pid = getpid();
             char *sPid = malloc(15);
             sprintf(sPid, "./tmp/%d", pid);
             mkfifo(sPid, 0666);
             char *input = strdup(argv[2]);
-            char *command = strdup(strsep(&input, " ")); // Nome do programa
+            char *command = NULL;
+            trimwhitespace(input);
             int size = strlen(input);
-            int nSpaces = (size == 0) ? 2 : 3; // Conta o numero de espaços no input, o valor de inicio depende na existencia de mais argumentos
+            int nSpaces = msgStats.type == COMMAND ? 0 : 1;
             for (int i = 0; i < size; i++)
                 if (input[i] == ' ')
                     nSpaces++;
             char args[50][100]; // Argumentos do programa
-            strcpy(args[0], command);
-            for (int i = 1; i < nSpaces - 1; i++)
-                strcpy(args[i], strsep(&input, " "));
-            free(command);
-            MessageStats msgStats;
-            msgStats.ogPid = pid;
-            msgStats.nPid = argc - 2;
-            memcpy(msgStats.pids, args, 50 * 100);
-            msgStats.type = argv[1][6] == 't' ? TIME : argv[1][6] == 'c' ? COMMAND
-                                                                         : UNIQUE;
             if (msgStats.type == COMMAND)
             {
-                strcpy(msgStats.pName, args[0]);
+                command = strdup(strsep(&input, " "));
+                strcpy(msgStats.pName, command);
             }
+            for (int i = 0; i < nSpaces; i++)
+                strcpy(args[i], strsep(&input, " "));
+            msgStats.ogPid = pid;
+            msgStats.nPid = nSpaces;
+            memcpy(msgStats.pids, args, 50 * 100);
             int fifoStats = open("./tmp/stats", O_WRONLY, 0666);
             write(fifoStats, &msgStats, sizeof(MessageStats));
             close(fifoStats);
@@ -217,7 +268,7 @@ int main(int argc, char const *argv[])
                 printf("Total execution time is %ld\n", res.num);
                 break;
             case COMMAND:
-                printf("%s was executed %ld times\n", args[0], res.num);
+                printf("%s was executed %ld times\n", command, res.num);
                 break;
             case UNIQUE:
                 int i = 0;
