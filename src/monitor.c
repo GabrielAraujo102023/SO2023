@@ -62,7 +62,7 @@ int main(int argc, char const *argv[])
                     int file = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0666);
                     char *input = malloc(1024);
                     strcpy(input, msgStart.pName);
-                    strcat(input, ";");
+                    strcat(input, "|");
                     sprintf(aux, "%ld", (msgFinish.time.tv_sec - msgStart.time.tv_sec) * 1000 + (msgFinish.time.tv_usec - msgStart.time.tv_usec) / 1000);
                     strcat(input, aux);
                     strcat(input, ";");
@@ -127,30 +127,28 @@ int main(int argc, char const *argv[])
                     for (int i = 0; i < msgStats.nPid; i++)
                     {
                         read(files[i], line, 1024);
-                        sep = strdup(line);
-                        while (strcmp(strsep(&sep, ";"), "") != 0)
+                        strsep(&line, "|");
+                        aux = strdup(strsep(&line, ";"));
+                        if(strcmp(aux, "") != 0)
                         {
-                            count += atoi(strsep(&sep, ";"));
+                            count += atoi(aux);
                         }
-                        free(sep);
-                        free(line);
                         line = malloc(1024);
                     }
                     break;
 
                 case COMMAND:
-                    for (int i = 1; i < msgStats.nPid; i++)
+                    for (int i = 0; i < msgStats.nPid; i++)
                     {
                         read(files[i], line, 1024);
-                        sep = strdup(line);
+                        sep = strdup(strsep(&line, "|"));
                         aux = strdup(strsep(&sep, ";"));
-                        while (strcmp(aux, "") != 0 && strcmp(aux, msgStats.pName) == 0)
+                        while (aux != NULL)
                         {
-                            count++;
-                            free(aux);
-                            aux = strdup(strsep(&sep, ";")); // Passa o tempo no ficheiro à frente
+                            if(strcmp(aux, msgStats.pName) == 0)
+                                count++;
+                            aux = strsep(&sep, ";");
                         }
-                        free(line);
                         line = malloc(1024);
                     }
                     break;
@@ -162,9 +160,9 @@ int main(int argc, char const *argv[])
                     for (int i = 0; i < msgStats.nPid; i++)
                     {
                         read(files[i], line, 1024);
-                        sep = strdup(line);
+                        sep = strdup(strsep(&line, "|"));
                         aux = strdup(strsep(&sep, ";"));
-                        while (strcmp(aux, "") != 0)
+                        while (aux != NULL)
                         {
                             bool isIn = false;
                             for (int j = 0; j < count; j++)
@@ -185,14 +183,9 @@ int main(int argc, char const *argv[])
                                 arr[count] = malloc(100);
                                 strcpy(arr[count++], aux);
                             }
-                            strsep(&sep, ";");
-                            free(aux);
-                            aux = strdup(strsep(&sep, ";"));
+                            aux = strsep(&sep, ";");
                         }
-                        free(aux);
-                        free(line);
                         line = malloc(1024);
-                        free(sep);
                     }
                     if (count > 99)
                         count = 99;
